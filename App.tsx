@@ -14,6 +14,7 @@ import {
   Text,
   TextInput,
   View,
+  Animated,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Audio, Video, ResizeMode } from "expo-av";
@@ -60,39 +61,81 @@ const extractYouTubeId = (url: string): string | null => {
 
 const { width } = Dimensions.get("window");
 
-/** Card **/
+// ── Palette ──────────────────────────────────────────────
+const C = {
+  bg:       "#08090f",
+  surface:  "#0e1018",
+  card:     "#111520",
+  border:   "#1c2238",
+  accent:   "#4f8ef7",
+  accentSoft:"#1a2a4a",
+  live:     "#22c55e",
+  liveSoft: "#0d2318",
+  yt:       "#ff3b30",
+  ytSoft:   "#2a0d0b",
+  star:     "#f59e0b",
+  textPri:  "#f0f4ff",
+  textSec:  "#6b7a9a",
+  textMute: "#3a4260",
+};
+
+/** Animated Card **/
 const ChannelCard: React.FC<{
   item: Channel;
   onPress: () => void;
   isFavorite: boolean;
   onToggleFavorite: () => void;
-}> = ({ item, onPress, isFavorite, onToggleFavorite }) => (
-  <Pressable onPress={onPress} style={{ flex: 1 }}>
-    <LinearGradient
-      colors={["#12172b", "#0b1020"]}
-      start={{ x: 0.1, y: 0 }}
-      end={{ x: 1, y: 1 }}
-      style={styles.card}
-    >
-      <View style={styles.thumbWrap}>
-        <Image source={{ uri: item.image }} style={styles.thumb} resizeMode="contain" />
-      </View>
-      <View style={styles.meta}>
-        <Text style={styles.title} numberOfLines={1}>{item.text}</Text>
-        <View style={styles.badgeRow}>
-          <View style={[styles.badge, { backgroundColor: item.type === "m3u8" ? "#16a34a" : "#ef4444" }]}>
-            <Text style={styles.badgeText}>{item.type === "m3u8" ? "LIVE (HLS)" : "YouTube"}</Text>
-          </View>
-          <Pressable onPress={onToggleFavorite} hitSlop={8} style={styles.favBtn}>
-            <Text style={[styles.favText, isFavorite && styles.favActive]}>
-              {isFavorite ? "★" : "☆"}
-            </Text>
-          </Pressable>
+  index: number;
+}> = ({ item, onPress, isFavorite, onToggleFavorite, index }) => {
+  const scale = React.useRef(new Animated.Value(1)).current;
+  const isLive = item.type === "m3u8";
+
+  const onPressIn = () =>
+    Animated.spring(scale, { toValue: 0.97, useNativeDriver: true, speed: 40 }).start();
+  const onPressOut = () =>
+    Animated.spring(scale, { toValue: 1, useNativeDriver: true, speed: 40 }).start();
+
+  return (
+    <Animated.View style={{ transform: [{ scale }] }}>
+      <Pressable
+        onPress={onPress}
+        onPressIn={onPressIn}
+        onPressOut={onPressOut}
+        style={styles.card}
+      >
+        {/* Left accent strip */}
+        <View style={[styles.cardStrip, { backgroundColor: isLive ? C.live : C.yt }]} />
+
+        {/* Logo */}
+        <View style={[styles.logoBox, { backgroundColor: isLive ? C.liveSoft : C.ytSoft }]}>
+          <Image source={{ uri: item.image }} style={styles.logo} resizeMode="contain" />
         </View>
-      </View>
-    </LinearGradient>
-  </Pressable>
-);
+
+        {/* Info */}
+        <View style={styles.cardInfo}>
+          <Text style={styles.cardTitle} numberOfLines={1}>{item.text}</Text>
+
+          <View style={styles.cardMeta}>
+            {/* Live dot / YT label */}
+            <View style={[styles.pill, { backgroundColor: isLive ? C.liveSoft : C.ytSoft }]}>
+              {isLive && <View style={styles.liveDot} />}
+              <Text style={[styles.pillText, { color: isLive ? C.live : C.yt }]}>
+                {isLive ? "LIVE" : "YouTube"}
+              </Text>
+            </View>
+          </View>
+        </View>
+
+        {/* Favorite */}
+        <Pressable onPress={onToggleFavorite} hitSlop={12} style={styles.starBtn}>
+          <Text style={[styles.starIcon, isFavorite && styles.starActive]}>
+            {isFavorite ? "★" : "☆"}
+          </Text>
+        </Pressable>
+      </Pressable>
+    </Animated.View>
+  );
+};
 
 /** Player Modal **/
 const PlayerModal: React.FC<{
@@ -122,92 +165,115 @@ const PlayerModal: React.FC<{
   const ytId = isYouTube ? extractYouTubeId(channel.videoUrl) : null;
   const playerHeight = Math.min(Platform.OS === "web" ? 540 : 360, width * 0.7);
 
-  const hint = isYouTube
-    ? "Tip: Press Home → PiP to keep YouTube playing"
-    : "Tip: Lock screen → audio keeps playing in background";
-
   return (
     <Modal animationType="slide" visible={visible} onRequestClose={onClose}>
       <View style={[styles.modalRoot, { paddingTop: insets.top }]}>
+
+        {/* Header */}
         <View style={styles.modalHeader}>
-          <Text style={styles.modalTitle} numberOfLines={1}>{channel.text}</Text>
+          <View style={styles.modalTitleRow}>
+            {/* channel type indicator */}
+            <View style={[
+              styles.modalBadge,
+              { backgroundColor: isYouTube ? C.ytSoft : C.liveSoft }
+            ]}>
+              {!isYouTube && <View style={styles.liveDotLg} />}
+              <Text style={[styles.modalBadgeText, { color: isYouTube ? C.yt : C.live }]}>
+                {isYouTube ? "YouTube" : "LIVE"}
+              </Text>
+            </View>
+            <Text style={styles.modalTitle} numberOfLines={1}>{channel.text}</Text>
+          </View>
+
           <Pressable onPress={onClose} style={styles.closeBtn}>
             <Text style={styles.closeText}>✕</Text>
           </Pressable>
         </View>
 
-        <View style={styles.playerBox}>
-          {isYouTube ? (
-            ytId ? (
-              <YoutubePlayer
-                height={playerHeight}
-                width={width}
-                play
-                videoId={ytId}
-                onReady={() => setLoading(false)}
-                onError={() => {
-                  setLoading(false);
-                  Alert.alert(
-                    "YouTube Error",
-                    "Can't play inline. Open in YouTube?",
-                    [
+        {/* Player */}
+        <View style={styles.playerWrapper}>
+          <View style={styles.playerBox}>
+            {isYouTube ? (
+              ytId ? (
+                <YoutubePlayer
+                  height={playerHeight}
+                  width={width}
+                  play
+                  videoId={ytId}
+                  onReady={() => setLoading(false)}
+                  onError={() => {
+                    setLoading(false);
+                    Alert.alert("YouTube Error", "Can't play inline. Open in YouTube?", [
                       { text: "Cancel", style: "cancel" },
                       { text: "Open", onPress: () => Linking.openURL(channel.videoUrl) },
-                    ]
-                  );
-                }}
-                webViewProps={{
-                  allowsFullscreenVideo: true,
-                  allowsInlineMediaPlayback: true,
-                  mediaPlaybackRequiresUserAction: false,
-                }}
-              />
+                    ]);
+                  }}
+                  webViewProps={{
+                    allowsFullscreenVideo: true,
+                    allowsInlineMediaPlayback: true,
+                    mediaPlaybackRequiresUserAction: false,
+                  }}
+                />
+              ) : (
+                <View style={styles.errorBox}>
+                  <Text style={styles.errorEmoji}>⚠️</Text>
+                  <Text style={styles.errorText}>Invalid YouTube URL</Text>
+                  <Pressable onPress={() => Linking.openURL(channel.videoUrl)} style={styles.openBtn}>
+                    <Text style={styles.openBtnText}>Open in YouTube</Text>
+                  </Pressable>
+                </View>
+              )
             ) : (
-              <View style={styles.center}>
-                <Text style={styles.errorText}>Invalid YouTube URL</Text>
-                <Pressable onPress={() => Linking.openURL(channel.videoUrl)}>
-                  <Text style={styles.linkText}>Open in YouTube</Text>
-                </Pressable>
-              </View>
-            )
-          ) : (
-            <Video
-              style={{ width, height: playerHeight, backgroundColor: "black" }}
-              source={{ uri: channel.videoUrl }}
-              useNativeControls
-              shouldPlay
-              isMuted={false}
-              resizeMode={ResizeMode.CONTAIN}
-              progressUpdateIntervalMillis={500}
-              onError={() => {
-                setLoading(false);
-                Alert.alert(
-                  "Playback Error",
-                  "This stream can't be played right now.",
-                  [
+              <Video
+                style={{ width, height: playerHeight, backgroundColor: "#000" }}
+                source={{ uri: channel.videoUrl }}
+                useNativeControls
+                shouldPlay
+                isMuted={false}
+                resizeMode={ResizeMode.CONTAIN}
+                progressUpdateIntervalMillis={500}
+                onLoadStart={() => setLoading(true)}
+                onReadyForDisplay={() => setLoading(false)}
+                onError={() => {
+                  setLoading(false);
+                  Alert.alert("Playback Error", "Stream unavailable right now.", [
                     { text: "Close", style: "cancel" },
                     { text: "Open in Browser", onPress: () => Linking.openURL(channel.videoUrl) },
-                  ]
-                );
-              }}
-              onLoadStart={() => setLoading(true)}
-              onReadyForDisplay={() => setLoading(false)}
-            />
-          )}
+                  ]);
+                }}
+              />
+            )}
 
-          {loading && (
-            <View style={styles.loadingOverlay}>
-              <ActivityIndicator size="large" color="#60a5fa" />
-              <Text style={{ color: "#cbd5e1", marginTop: 8 }}>Loading…</Text>
-            </View>
-          )}
+            {loading && (
+              <View style={styles.loadingOverlay}>
+                <ActivityIndicator size="large" color={C.accent} />
+                <Text style={styles.loadingText}>Connecting…</Text>
+              </View>
+            )}
+          </View>
         </View>
 
-        <Text style={styles.streamHint}>{hint}</Text>
+        {/* Hint bar */}
+        <View style={styles.hintBar}>
+          <Text style={styles.hintIcon}>{isYouTube ? "📱" : "🔒"}</Text>
+          <Text style={styles.hintText}>
+            {isYouTube
+              ? "Press Home for Picture-in-Picture"
+              : "Audio continues playing on lock screen"}
+          </Text>
+        </View>
       </View>
     </Modal>
   );
 };
+
+/** Section Header **/
+const SectionHeader: React.FC<{ title: string }> = ({ title }) => (
+  <View style={styles.sectionHeader}>
+    <View style={styles.sectionLine} />
+    <Text style={styles.sectionTitle}>{title}</Text>
+  </View>
+);
 
 /** Main **/
 const AppInner = () => {
@@ -217,8 +283,8 @@ const AppInner = () => {
   const [playerOpen, setPlayerOpen] = useState(false);
   const [current, setCurrent] = useState<Channel | null>(null);
   const [favorites, setFavorites] = useState<string[]>([]);
+  const insets = useSafeAreaInsets();
 
-  // ✅ Background audio — keeps playing when screen locks
   useEffect(() => {
     (async () => {
       try {
@@ -258,19 +324,16 @@ const AppInner = () => {
           title,
           data: payload[title] || [],
         }));
-
         const favChannels: Channel[] = [];
         for (const sec of list)
           for (const ch of sec.data)
             if (favorites.includes(ch.text)) favChannels.push(ch);
-
         const finalSections = favChannels.length
-          ? [{ title: "⭐ Favorites", data: favChannels }, ...list]
+          ? [{ title: "⭐  Favorites", data: favChannels }, ...list]
           : list;
-
         setSections(finalSections);
       } catch {
-        Alert.alert("Load Error", "Couldn't load channel list. Check your network.");
+        Alert.alert("Load Error", "Couldn't load channels. Check your network.");
       } finally {
         setLoading(false);
       }
@@ -291,61 +354,74 @@ const AppInner = () => {
   }, [sections, query]);
 
   const handleOpen = (ch: Channel) => { setCurrent(ch); setPlayerOpen(true); };
-  const toggleFavorite = (name: string) => {
-    saveFavorites(
-      favorites.includes(name) ? favorites.filter((n) => n !== name) : [...favorites, name]
-    );
-  };
+  const toggleFavorite = (name: string) =>
+    saveFavorites(favorites.includes(name) ? favorites.filter((n) => n !== name) : [...favorites, name]);
 
   return (
-    <View style={styles.root}>
-      <StatusBar barStyle="light-content" />
+    <View style={[styles.root, { paddingTop: insets.top }]}>
+      <StatusBar barStyle="light-content" backgroundColor={C.bg} />
+
+      {/* ── Header ── */}
       <LinearGradient
-        colors={["#0f1534", "#0b1020"]}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
+        colors={["#0d1225", C.bg]}
+        start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
         style={styles.header}
       >
-        <Text style={styles.appTitle}>Nazat Stream</Text>
-        <Text style={styles.appSubtitle}>Live. Global. Yours</Text>
-        <View style={styles.searchWrap}>
+        <View style={styles.headerTop}>
+          <View>
+            <Text style={styles.appTitle}>NAZAT</Text>
+            <Text style={styles.appSub}>STREAM</Text>
+          </View>
+          <View style={styles.liveIndicator}>
+            <View style={styles.livePulse} />
+            <Text style={styles.liveLabel}>ON AIR</Text>
+          </View>
+        </View>
+
+        {/* Search */}
+        <View style={styles.searchBox}>
+          <Text style={styles.searchIcon}>⌕</Text>
           <TextInput
             placeholder="Search channels…"
-            placeholderTextColor="#9aa4b2"
+            placeholderTextColor={C.textMute}
             value={query}
             onChangeText={setQuery}
-            style={styles.search}
+            style={styles.searchInput}
+            returnKeyType="search"
           />
+          {query.length > 0 && (
+            <Pressable onPress={() => setQuery("")} hitSlop={8}>
+              <Text style={styles.clearBtn}>✕</Text>
+            </Pressable>
+          )}
         </View>
       </LinearGradient>
 
+      {/* ── Channel List ── */}
       {loading ? (
-        <View style={[styles.center, { flex: 1 }]}>
-          <ActivityIndicator size="large" color="#60a5fa" />
-          <Text style={{ color: "#94a3b8", marginTop: 8 }}>Loading channels…</Text>
+        <View style={styles.loadingFull}>
+          <ActivityIndicator size="large" color={C.accent} />
+          <Text style={styles.loadingFullText}>Loading channels…</Text>
         </View>
       ) : (
         <SectionList
           sections={filtered}
           keyExtractor={(item) => `${item.text}-${item.videoUrl}`}
           stickySectionHeadersEnabled
-          renderSectionHeader={({ section: { title } }) => (
-            <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>{title}</Text>
-            </View>
+          showsVerticalScrollIndicator={false}
+          renderSectionHeader={({ section: { title } }) => <SectionHeader title={title} />}
+          contentContainerStyle={styles.listContent}
+          renderItem={({ item, index }) => (
+            <ChannelCard
+              item={item}
+              index={index}
+              onPress={() => handleOpen(item)}
+              isFavorite={favorites.includes(item.text)}
+              onToggleFavorite={() => toggleFavorite(item.text)}
+            />
           )}
-          contentContainerStyle={{ padding: 12, paddingBottom: 40 }}
-          renderItem={({ item }) => (
-            <View style={{ marginBottom: 12 }}>
-              <ChannelCard
-                item={item}
-                onPress={() => handleOpen(item)}
-                isFavorite={favorites.includes(item.text)}
-                onToggleFavorite={() => toggleFavorite(item.text)}
-              />
-            </View>
-          )}
-          renderSectionFooter={() => <View style={{ height: 12 }} />}
+          renderSectionFooter={() => <View style={{ height: 8 }} />}
+          ItemSeparatorComponent={() => <View style={{ height: 8 }} />}
         />
       )}
 
@@ -366,84 +442,209 @@ export default function App() {
   );
 }
 
-/** Styles **/
+/** ── Styles ── **/
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: "#0b1020" },
+  root: { flex: 1, backgroundColor: C.bg },
 
+  // Header
   header: {
-    paddingTop: Platform.OS === "android" ? 52 : 24,
+    paddingHorizontal: 20,
+    paddingTop: 12,
     paddingBottom: 16,
-    paddingHorizontal: 16,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#1e293b",
+    borderBottomWidth: 1,
+    borderBottomColor: C.border,
   },
-  appTitle: { fontSize: 22, fontWeight: "700", color: "white" },
-  appSubtitle: { fontSize: 13, color: "#9aa4b2", marginTop: 2 },
-
-  searchWrap: {
-    marginTop: 12,
-    backgroundColor: "#0f172a",
+  headerTop: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    justifyContent: "space-between",
+    marginBottom: 16,
+  },
+  appTitle: {
+    fontSize: 28,
+    fontWeight: "900",
+    color: C.textPri,
+    letterSpacing: 6,
+  },
+  appSub: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: C.accent,
+    letterSpacing: 8,
+    marginTop: -4,
+  },
+  liveIndicator: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: C.liveSoft,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 20,
     borderWidth: 1,
-    borderColor: "#1f2937",
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    borderColor: "#1a3d24",
   },
-  search: { color: "white", fontSize: 15 },
+  livePulse: {
+    width: 7, height: 7, borderRadius: 4,
+    backgroundColor: C.live,
+  },
+  liveLabel: {
+    fontSize: 11, fontWeight: "800",
+    color: C.live, letterSpacing: 2,
+  },
 
-  sectionHeader: { marginTop: 16, marginBottom: 8, paddingHorizontal: 4 },
-  sectionTitle: { color: "#cbd5e1", fontSize: 16, fontWeight: "700" },
+  // Search
+  searchBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: C.surface,
+    borderWidth: 1,
+    borderColor: C.border,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    gap: 8,
+  },
+  searchIcon: { fontSize: 18, color: C.textSec },
+  searchInput: { flex: 1, color: C.textPri, fontSize: 15 },
+  clearBtn: { color: C.textSec, fontSize: 14, padding: 2 },
 
+  // Section
+  sectionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 16,
+    paddingTop: 20,
+    paddingBottom: 10,
+    backgroundColor: C.bg,
+    gap: 10,
+  },
+  sectionLine: {
+    width: 3, height: 16, borderRadius: 2,
+    backgroundColor: C.accent,
+  },
+  sectionTitle: {
+    fontSize: 13, fontWeight: "800",
+    color: C.textSec, letterSpacing: 2,
+    textTransform: "uppercase",
+  },
+
+  // Card
   card: {
     flexDirection: "row",
     alignItems: "center",
+    backgroundColor: C.card,
+    marginHorizontal: 12,
     borderRadius: 16,
-    padding: 12,
     borderWidth: 1,
-    borderColor: "#1f2a44",
+    borderColor: C.border,
+    overflow: "hidden",
+    elevation: 6,
     shadowColor: "#000",
-    shadowOpacity: 0.15,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 4,
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
   },
-  thumbWrap: {
-    width: 66, height: 66, borderRadius: 12,
-    backgroundColor: "#0f172a",
-    alignItems: "center", justifyContent: "center",
-    overflow: "hidden", marginRight: 12,
+  cardStrip: { width: 3, alignSelf: "stretch" },
+  logoBox: {
+    width: 62, height: 62,
+    margin: 12,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
   },
-  thumb: { width: 64, height: 64 },
-  meta: { flex: 1 },
-  title: { color: "white", fontSize: 16, fontWeight: "600" },
-  badgeRow: { marginTop: 8, flexDirection: "row", alignItems: "center", gap: 8 },
-  badge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999 },
-  badgeText: { color: "white", fontSize: 12, fontWeight: "700" },
-  favBtn: { marginLeft: "auto", padding: 4 },
-  favText: { color: "#94a3b8", fontSize: 18 },
-  favActive: { color: "#fbbf24" },
+  logo: { width: 52, height: 52 },
+  cardInfo: { flex: 1, paddingVertical: 14, paddingRight: 8 },
+  cardTitle: {
+    fontSize: 15, fontWeight: "700",
+    color: C.textPri, marginBottom: 6,
+  },
+  cardMeta: { flexDirection: "row", alignItems: "center", gap: 8 },
+  pill: {
+    flexDirection: "row", alignItems: "center",
+    paddingHorizontal: 8, paddingVertical: 3,
+    borderRadius: 20, gap: 5,
+  },
+  liveDot: {
+    width: 5, height: 5, borderRadius: 3,
+    backgroundColor: C.live,
+  },
+  pillText: { fontSize: 11, fontWeight: "800", letterSpacing: 0.5 },
+  starBtn: { paddingHorizontal: 14, paddingVertical: 10 },
+  starIcon: { fontSize: 20, color: C.textMute },
+  starActive: { color: C.star },
 
-  modalRoot: { flex: 1, backgroundColor: "#0b1020" },
+  // List
+  listContent: { paddingBottom: 48 },
+
+  // Loading
+  loadingFull: { flex: 1, alignItems: "center", justifyContent: "center", gap: 12 },
+  loadingFullText: { color: C.textSec, fontSize: 14 },
+
+  // Modal
+  modalRoot: { flex: 1, backgroundColor: C.bg },
   modalHeader: {
     flexDirection: "row", alignItems: "center",
-    paddingHorizontal: 12, paddingVertical: 8,
-    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#1f2937",
+    paddingHorizontal: 14, paddingVertical: 10,
+    borderBottomWidth: 1, borderBottomColor: C.border,
+    gap: 10,
   },
-  modalTitle: { color: "white", fontSize: 16, fontWeight: "700", flex: 1 },
+  modalTitleRow: { flex: 1, flexDirection: "row", alignItems: "center", gap: 8 },
+  modalBadge: {
+    flexDirection: "row", alignItems: "center",
+    paddingHorizontal: 8, paddingVertical: 4,
+    borderRadius: 8, gap: 5,
+  },
+  liveDotLg: {
+    width: 6, height: 6, borderRadius: 3,
+    backgroundColor: C.live,
+  },
+  modalBadgeText: { fontSize: 11, fontWeight: "800", letterSpacing: 1 },
+  modalTitle: {
+    flex: 1, color: C.textPri,
+    fontSize: 15, fontWeight: "700",
+  },
   closeBtn: {
-    paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8,
-    borderWidth: 1, borderColor: "#24324a", backgroundColor: "#0f172a",
+    paddingHorizontal: 12, paddingVertical: 7,
+    borderRadius: 10, borderWidth: 1,
+    borderColor: C.border, backgroundColor: C.surface,
   },
-  closeText: { color: "#cbd5e1", fontWeight: "700" },
+  closeText: { color: C.textSec, fontWeight: "700", fontSize: 13 },
 
-  playerBox: { alignItems: "center", justifyContent: "center", marginTop: 10 },
+  // Player
+  playerWrapper: { alignItems: "center", justifyContent: "center" },
+  playerBox: { position: "relative", alignItems: "center", justifyContent: "center" },
   loadingOverlay: {
-    position: "absolute", alignItems: "center", justifyContent: "center",
-    inset: 0 as any, backgroundColor: "rgba(0,0,0,0.25)",
+    position: "absolute", inset: 0 as any,
+    alignItems: "center", justifyContent: "center",
+    backgroundColor: "rgba(8,9,15,0.7)",
+    gap: 10,
   },
-  streamHint: { textAlign: "center", color: "#9aa4b2", marginTop: 12, fontSize: 12 },
+  loadingText: { color: C.textSec, fontSize: 13 },
 
-  center: { alignItems: "center", justifyContent: "center" },
-  errorText: { color: "#ef4444", marginBottom: 8 },
-  linkText: { color: "#60a5fa", textDecorationLine: "underline" },
+  // Error
+  errorBox: {
+    width, height: 280,
+    alignItems: "center", justifyContent: "center", gap: 10,
+  },
+  errorEmoji: { fontSize: 36 },
+  errorText: { color: "#ef4444", fontSize: 15, fontWeight: "600" },
+  openBtn: {
+    marginTop: 6, backgroundColor: C.accentSoft,
+    paddingHorizontal: 20, paddingVertical: 10,
+    borderRadius: 10, borderWidth: 1, borderColor: C.accent,
+  },
+  openBtnText: { color: C.accent, fontWeight: "700" },
+
+  // Hint bar
+  hintBar: {
+    flexDirection: "row", alignItems: "center",
+    justifyContent: "center",
+    gap: 6, paddingVertical: 10,
+    borderTopWidth: 1, borderTopColor: C.border,
+    marginTop: 10,
+  },
+  hintIcon: { fontSize: 13 },
+  hintText: { color: C.textMute, fontSize: 12 },
 });
