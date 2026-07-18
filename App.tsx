@@ -17,6 +17,7 @@ import {
   useWindowDimensions,
   AppState,
   BackHandler,
+  Easing,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Audio, Video, ResizeMode } from "expo-av";
@@ -137,12 +138,17 @@ const ChannelCard: React.FC<{
   );
 };
 
-/** Player Modal **/
-const PlayerModal: React.FC<{
-  visible: boolean;
+/** Player Overlay — mini docked player that expands to full screen **/
+const MINI_HEIGHT = 76;
+const MINI_MARGIN = 12;
+
+const PlayerOverlay: React.FC<{
   channel: Channel | null;
+  expanded: boolean;
+  onExpand: () => void;
+  onCollapse: () => void;
   onClose: () => void;
-}> = ({ visible, channel, onClose }) => {
+}> = ({ channel, expanded, onExpand, onCollapse, onClose }) => {
   useKeepAwake();
   const [loading, setLoading] = useState(true);
   const insets = useSafeAreaInsets();
@@ -150,11 +156,25 @@ const PlayerModal: React.FC<{
   // unlike a one-time Dimensions.get() snapshot which goes stale after rotation.
   const { width, height } = useWindowDimensions();
 
+  // Drives the smooth morph between the small docked bar and the full-screen
+  // player. The <Video>/<YoutubePlayer> underneath never remounts during this
+  // transition — only this container's geometry animates — so playback
+  // continues without a reload or buffering blip.
+  const expandAnim = React.useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    Animated.timing(expandAnim, {
+      toValue: expanded ? 1 : 0,
+      duration: 320,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    }).start();
+  }, [expanded]);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        if (visible) {
+        if (expanded) {
           await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
         } else if (!cancelled) {
           await ScreenOrientation.unlockAsync();
@@ -168,7 +188,7 @@ const PlayerModal: React.FC<{
     return () => {
       cancelled = true;
     };
-  }, [visible]);
+  }, [expanded]);
 
   // Always restore portrait + unlock if the component ever unmounts while
   // still locked to landscape (e.g. app crash recovery, fast navigation away).
@@ -247,65 +267,57 @@ const PlayerModal: React.FC<{
     }
   };
 
-  // Android hardware back button should close the player, same as the ✕
-  // button — but only while the player is actually open, otherwise this
-  // would swallow back-navigation on the rest of the app.
+  // Android hardware back button: while full-screen, collapse to the mini
+  // player first (matches the ⌄ button); if already mini, close it entirely.
   useEffect(() => {
-    if (!visible) return;
+    if (!channel) return;
     const sub = BackHandler.addEventListener("hardwareBackPress", () => {
-      onClose();
+      if (expanded) onCollapse();
+      else onClose();
       return true;
     });
     return () => sub.remove();
-  }, [visible, onClose]);
+  }, [channel, expanded, onCollapse, onClose]);
 
-  if (!channel || !visible) return null;
+  if (!channel) return null;
 
-  // Use the larger of width/height since after a landscape lock, "width"
-  // briefly reports the old portrait value on some Android devices during
-  // the rotation animation — using max() avoids a squashed/oversized player.
-  const screenWide = Math.max(width, height);
-  const screenNarrow = Math.min(width, height);
-  const playerHeight = Math.min(Platform.OS === "web" ? 540 : 360, screenNarrow * 0.9);
+  const miniWidth = width - MINI_MARGIN * 2;
+  const miniTop = height - MINI_HEIGHT - insets.bottom - MINI_MARGIN;
+
+  const containerStyle = {
+    position: "absolute" as const,
+    left: expandAnim.interpolate({ inputRange: [0, 1], outputRange: [MINI_MARGIN, 0] }),
+    top: expandAnim.interpolate({ inputRange: [0, 1], outputRange: [miniTop, 0] }),
+    width: expandAnim.interpolate({ inputRange: [0, 1], outputRange: [miniWidth, width] }),
+    height: expandAnim.interpolate({ inputRange: [0, 1], outputRange: [MINI_HEIGHT, height] }),
+    borderRadius: expandAnim.interpolate({ inputRange: [0, 1], outputRange: [16, 0] }),
+    borderWidth: expandAnim.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }),
+    borderColor: C.border,
+    shadowOpacity: expandAnim.interpolate({ inputRange: [0, 1], outputRange: [0.4, 0] }),
+  };
+
+  const showYouTubeError = isYouTube && expanded && !ytId;
 
   return (
-    <View
+    <Animated.View
       style={[
-        StyleSheet.absoluteFillObject,
-        { width, height, backgroundColor: C.bg, zIndex: 1000, elevation: 1000 },
+        styles.overlayBase,
+        containerStyle,
+        { zIndex: 1000, elevation: 1000 },
       ]}
     >
-      <View style={[styles.modalRoot, { paddingTop: insets.top }]}>
-
-        {/* Header */}
-        <View style={styles.modalHeader}>
-          <View style={styles.modalTitleRow}>
-            {/* channel type indicator */}
-            <View style={[
-              styles.modalBadge,
-              { backgroundColor: isYouTube ? C.ytSoft : C.liveSoft }
-            ]}>
-              {!isYouTube && <View style={styles.liveDotLg} />}
-              <Text style={[styles.modalBadgeText, { color: isYouTube ? C.yt : C.live }]}>
-                {isYouTube ? "YouTube" : "LIVE"}
-              </Text>
-            </View>
-            <Text style={styles.modalTitle} numberOfLines={1}>{channel.text}</Text>
-          </View>
-
-          <Pressable onPress={onClose} style={styles.closeBtn}>
-            <Text style={styles.closeText}>✕</Text>
-          </Pressable>
-        </View>
-
-        {/* Player */}
-        <View style={styles.playerWrapper}>
-          <View style={styles.playerBox}>
-            {isYouTube ? (
-              ytId ? (
+      <Pressable
+        onPress={() => { if (!expanded) onExpand(); }}
+        disabled={expanded}
+        style={StyleSheet.absoluteFillObject}
+      >
+        {isYouTube ? (
+          expanded ? (
+            ytId ? (
+              <View style={StyleSheet.absoluteFillObject}>
                 <YoutubePlayer
-                  height={playerHeight}
-                  width={screenWide}
+                  height={height}
+                  width={width}
                   play
                   videoId={ytId}
                   onReady={() => setLoading(false)}
@@ -322,69 +334,132 @@ const PlayerModal: React.FC<{
                     mediaPlaybackRequiresUserAction: false,
                   }}
                 />
-              ) : (
-                <View style={[styles.errorBox, { width: screenWide }]}>
-                  <Text style={styles.errorEmoji}>⚠️</Text>
-                  <Text style={styles.errorText}>Invalid YouTube URL</Text>
-                  <Pressable onPress={() => Linking.openURL(channel.videoUrl)} style={styles.openBtn}>
-                    <Text style={styles.openBtnText}>Open in YouTube</Text>
-                  </Pressable>
-                </View>
-              )
-            ) : (
-              <Video
-                ref={videoRef}
-                style={{ width: screenWide, height: playerHeight, backgroundColor: "#000" }}
-                source={{ uri: channel.videoUrl }}
-                useNativeControls
-                shouldPlay
-                isMuted={false}
-                resizeMode={ResizeMode.CONTAIN}
-                progressUpdateIntervalMillis={500}
-                onLoadStart={() => setLoading(true)}
-                onReadyForDisplay={() => {
-                  setLoading(false);
-                  hasStartedRef.current = true;
-                }}
-                onPlaybackStatusUpdate={onPlaybackStatusUpdate}
-                onError={() => {
-                  setLoading(false);
-                  Alert.alert("Playback Error", "Stream unavailable right now.", [
-                    { text: "Close", style: "cancel" },
-                    { text: "Open in Browser", onPress: () => Linking.openURL(channel.videoUrl) },
-                  ]);
-                }}
-              />
-            )}
-
-            {loading && (
-              <View style={styles.loadingOverlay}>
-                <ActivityIndicator size="large" color={C.accent} />
-                <Text style={styles.loadingText}>Connecting…</Text>
               </View>
-            )}
+            ) : null
+          ) : (
+            <View style={[StyleSheet.absoluteFillObject, styles.ytPlaceholder]}>
+              <Image source={{ uri: channel.image }} style={styles.ytPlaceholderLogo} resizeMode="contain" />
+            </View>
+          )
+        ) : (
+          <Video
+            ref={videoRef}
+            style={StyleSheet.absoluteFillObject}
+            source={{ uri: channel.videoUrl }}
+            useNativeControls={expanded}
+            shouldPlay
+            isMuted={false}
+            resizeMode={ResizeMode.CONTAIN}
+            progressUpdateIntervalMillis={500}
+            onLoadStart={() => setLoading(true)}
+            onReadyForDisplay={() => {
+              setLoading(false);
+              hasStartedRef.current = true;
+            }}
+            onPlaybackStatusUpdate={onPlaybackStatusUpdate}
+            onError={() => {
+              setLoading(false);
+              Alert.alert("Playback Error", "Stream unavailable right now.", [
+                { text: "Close", style: "cancel" },
+                { text: "Open in Browser", onPress: () => Linking.openURL(channel.videoUrl) },
+              ]);
+            }}
+          />
+        )}
 
-            {!loading && buffering && !isYouTube && (
-              <View style={styles.bufferBadge}>
-                <ActivityIndicator size="small" color={C.accent} />
-              </View>
-            )}
+        {showYouTubeError && (
+          <View style={[StyleSheet.absoluteFillObject, styles.errorOverlay]}>
+            <Text style={styles.errorEmoji}>⚠️</Text>
+            <Text style={styles.errorText}>Invalid YouTube URL</Text>
+            <Pressable onPress={() => Linking.openURL(channel.videoUrl)} style={styles.openBtn}>
+              <Text style={styles.openBtnText}>Open in YouTube</Text>
+            </Pressable>
           </View>
-        </View>
+        )}
 
-        {/* Hint bar */}
-        <View style={styles.hintBar}>
-          <Text style={styles.hintIcon}>{isYouTube ? "📱" : "🔒"}</Text>
-          <Text style={styles.hintText}>
-            {isYouTube
-              ? "Press Home for Picture-in-Picture"
-              : "Audio continues playing on lock screen"}
-          </Text>
-        </View>
-      </View>
-    </View>
+        {loading && !isYouTube && (
+          <View style={styles.loadingOverlay} pointerEvents="none">
+            <ActivityIndicator size={expanded ? "large" : "small"} color={C.accent} />
+            {expanded && <Text style={styles.loadingText}>Connecting…</Text>}
+          </View>
+        )}
+
+        {!loading && buffering && !isYouTube && expanded && (
+          <View style={styles.bufferBadge} pointerEvents="none">
+            <ActivityIndicator size="small" color={C.accent} />
+          </View>
+        )}
+
+        {/* Mini bar chrome — fades out early in the expand animation */}
+        <Animated.View
+          pointerEvents={expanded ? "none" : "box-none"}
+          style={[
+            styles.miniChrome,
+            { opacity: expandAnim.interpolate({ inputRange: [0, 0.4], outputRange: [1, 0], extrapolate: "clamp" }) },
+          ]}
+        >
+          <LinearGradient colors={["transparent", "rgba(2,3,8,0.9)"]} style={StyleSheet.absoluteFillObject} />
+          <View style={styles.miniInfo}>
+            <View style={[styles.pill, { backgroundColor: isYouTube ? C.ytSoft : C.liveSoft }]}>
+              {!isYouTube && <View style={styles.liveDot} />}
+              <Text style={[styles.pillText, { color: isYouTube ? C.yt : C.live }]}>
+                {isYouTube ? "YouTube" : "LIVE"}
+              </Text>
+            </View>
+            <Text style={styles.miniTitle} numberOfLines={1}>{channel.text}</Text>
+          </View>
+          <View style={styles.miniButtons}>
+            <Pressable onPress={onExpand} hitSlop={10} style={styles.miniBtn}>
+              <Text style={styles.miniBtnIcon}>⤢</Text>
+            </Pressable>
+            <Pressable onPress={onClose} hitSlop={10} style={styles.miniBtn}>
+              <Text style={styles.miniBtnIcon}>✕</Text>
+            </Pressable>
+          </View>
+        </Animated.View>
+
+        {/* Full-screen chrome — fades in only once mostly expanded */}
+        {expanded && (
+          <Animated.View
+            pointerEvents="box-none"
+            style={[
+              styles.fullChrome,
+              { opacity: expandAnim.interpolate({ inputRange: [0.6, 1], outputRange: [0, 1], extrapolate: "clamp" }) },
+            ]}
+          >
+            <View style={[styles.fullHeaderBar, { paddingTop: insets.top + 10 }]}>
+              <View style={styles.modalTitleRow}>
+                <View style={[styles.modalBadge, { backgroundColor: isYouTube ? C.ytSoft : C.liveSoft }]}>
+                  {!isYouTube && <View style={styles.liveDotLg} />}
+                  <Text style={[styles.modalBadgeText, { color: isYouTube ? C.yt : C.live }]}>
+                    {isYouTube ? "YouTube" : "LIVE"}
+                  </Text>
+                </View>
+                <Text style={styles.modalTitle} numberOfLines={1}>{channel.text}</Text>
+              </View>
+              <Pressable onPress={onCollapse} style={styles.closeBtn} hitSlop={8}>
+                <Text style={styles.closeText}>⌄</Text>
+              </Pressable>
+              <Pressable onPress={onClose} style={[styles.closeBtn, { marginLeft: 8 }]} hitSlop={8}>
+                <Text style={styles.closeText}>✕</Text>
+              </Pressable>
+            </View>
+
+            <View style={[styles.fullHintBar, { paddingBottom: insets.bottom + 8 }]}>
+              <Text style={styles.hintIcon}>{isYouTube ? "📱" : "🔒"}</Text>
+              <Text style={styles.hintText}>
+                {isYouTube
+                  ? "Press Home for Picture-in-Picture"
+                  : "Audio continues playing on lock screen"}
+              </Text>
+            </View>
+          </Animated.View>
+        )}
+      </Pressable>
+    </Animated.View>
   );
 };
+
 
 /** Section Header **/
 const SectionHeader: React.FC<{ title: string }> = ({ title }) => (
@@ -399,8 +474,8 @@ const AppInner = () => {
   const [sections, setSections] = useState<SectionData[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
-  const [playerOpen, setPlayerOpen] = useState(false);
   const [current, setCurrent] = useState<Channel | null>(null);
+  const [expanded, setExpanded] = useState(false);
   const [favorites, setFavorites] = useState<string[]>([]);
   const insets = useSafeAreaInsets();
 
@@ -472,7 +547,10 @@ const AppInner = () => {
       .filter((s) => s.data.length > 0);
   }, [sections, query]);
 
-  const handleOpen = (ch: Channel) => { setCurrent(ch); setPlayerOpen(true); };
+  // Tapping a channel opens the small docked mini player first; the user
+  // taps it to expand to full screen (see PlayerOverlay).
+  const handleOpen = (ch: Channel) => { setCurrent(ch); setExpanded(false); };
+  const closePlayer = () => { setExpanded(false); setCurrent(null); };
   const toggleFavorite = (name: string) =>
     saveFavorites(favorites.includes(name) ? favorites.filter((n) => n !== name) : [...favorites, name]);
 
@@ -544,10 +622,12 @@ const AppInner = () => {
         />
       )}
 
-      <PlayerModal
-        visible={playerOpen}
+      <PlayerOverlay
         channel={current}
-        onClose={() => setPlayerOpen(false)}
+        expanded={expanded}
+        onExpand={() => setExpanded(true)}
+        onCollapse={() => setExpanded(false)}
+        onClose={closePlayer}
       />
     </View>
   );
@@ -774,4 +854,48 @@ const styles = StyleSheet.create({
   },
   hintIcon: { fontSize: 13 },
   hintText: { color: C.textMute, fontSize: 12 },
+
+  // ── Player overlay (mini docked bar ⇄ full screen) ──
+  overlayBase: {
+    backgroundColor: C.bg,
+    overflow: "hidden",
+    shadowColor: "#000",
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 6 },
+  },
+  ytPlaceholder: { alignItems: "center", justifyContent: "center", backgroundColor: C.ytSoft },
+  ytPlaceholderLogo: { width: "40%", height: "40%", opacity: 0.85 },
+  errorOverlay: { alignItems: "center", justifyContent: "center", gap: 10, backgroundColor: C.bg },
+
+  // Mini bar chrome — overlaid on the bottom of the small docked player
+  miniChrome: {
+    position: "absolute",
+    left: 0, right: 0, bottom: 0, top: 0,
+    flexDirection: "row",
+    alignItems: "flex-end",
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  miniInfo: { flex: 1, justifyContent: "flex-end", gap: 4 },
+  miniTitle: { color: C.textPri, fontSize: 13, fontWeight: "700" },
+  miniButtons: { flexDirection: "row", alignItems: "center", gap: 6 },
+  miniBtn: {
+    width: 30, height: 30, borderRadius: 15,
+    alignItems: "center", justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.14)",
+  },
+  miniBtnIcon: { color: C.textPri, fontSize: 15, fontWeight: "700" },
+
+  // Full-screen chrome — translucent header/hint bars floating over the video
+  fullChrome: { ...StyleSheet.absoluteFillObject, justifyContent: "space-between" },
+  fullHeaderBar: {
+    flexDirection: "row", alignItems: "center",
+    paddingHorizontal: 14, paddingBottom: 10,
+    gap: 10, backgroundColor: "rgba(6,7,14,0.55)",
+  },
+  fullHintBar: {
+    flexDirection: "row", alignItems: "center",
+    justifyContent: "center", gap: 6, paddingTop: 10,
+    backgroundColor: "rgba(6,7,14,0.5)",
+  },
 });
