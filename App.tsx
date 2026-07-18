@@ -191,18 +191,16 @@ const PlayerModal: React.FC<{
     userPausedRef.current = false;
   }, [channel?.videoUrl]);
 
-  // Pause the native player when the app is backgrounded (avoids a known
-  // expo-av crash/freeze source), and — importantly — resume it again once
-  // the app is foregrounded, as long as the user didn't pause it themselves.
-  // (Without the resume half, any brief background dip — a notification,
-  // switching apps for a second, the screen auto-dimming — leaves the
-  // player paused forever, which looks like it "randomly stopped".)
+  // Background audio for live (m3u8) channels is the whole point of this
+  // app (see Audio.setAudioModeAsync + UIBackgroundModes: audio in
+  // app.json) — so we must NOT pause playback just because the app
+  // backgrounds. We only step in when returning to the foreground, to
+  // recover from a real interruption (e.g. a phone call stole audio focus)
+  // if the stream actually stopped and the user didn't pause it themselves.
   useEffect(() => {
     const sub = AppState.addEventListener("change", (state) => {
       if (!videoRef.current || isYouTube) return;
-      if (state !== "active") {
-        videoRef.current.pauseAsync().catch(() => {});
-      } else if (!userPausedRef.current) {
+      if (state === "active" && !userPausedRef.current) {
         videoRef.current.playAsync().catch(() => {});
       }
     });
