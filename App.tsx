@@ -5,7 +5,6 @@ import {
   Dimensions,
   Image,
   Linking,
-  Modal,
   Platform,
   Pressable,
   SectionList,
@@ -17,6 +16,7 @@ import {
   Animated,
   useWindowDimensions,
   AppState,
+  BackHandler,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Audio, Video, ResizeMode } from "expo-av";
@@ -184,11 +184,15 @@ const PlayerModal: React.FC<{
   const videoRef = React.useRef<Video>(null);
   const userPausedRef = React.useRef(false);
   const retryCountRef = React.useRef(0);
+  const hasStartedRef = React.useRef(false);
+  const [buffering, setBuffering] = useState(false);
 
   useEffect(() => {
     setLoading(true);
+    setBuffering(false);
     retryCountRef.current = 0;
     userPausedRef.current = false;
+    hasStartedRef.current = false;
   }, [channel?.videoUrl]);
 
   // Background audio for live (m3u8) channels is the whole point of this
@@ -207,21 +211,31 @@ const PlayerModal: React.FC<{
     return () => sub.remove();
   }, [isYouTube]);
 
-  // Live-stream stall recovery: if playback unexpectedly drops to "not
-  // playing" while shouldPlay is still true (nothing — not us, not the user
-  // via the native controls — asked it to stop), it's almost always a brief
-  // network hiccup. Retry automatically instead of leaving a frozen/black
-  // screen that looks like a crash. If the user deliberately hits pause on
-  // the native controls, shouldPlay flips to false too, so we correctly
-  // leave it alone.
+  // Once the stream has rendered its first frame, brief re-buffering blips
+  // (completely normal for live HLS — segments download in small bursts)
+  // should NOT bring back the full "Connecting…" overlay hiding the video
+  // underneath. That overlay is only for the initial connect; afterwards we
+  // show a small unobtrusive spinner instead.
   const onPlaybackStatusUpdate = (status: any) => {
     if (!status.isLoaded) return;
     userPausedRef.current = !status.shouldPlay;
+
+    if (status.isPlaying) {
+      hasStartedRef.current = true;
+      retryCountRef.current = 0;
+    }
+
     if (status.isBuffering) {
-      setLoading(true);
+      if (hasStartedRef.current) {
+        setBuffering(true);
+      } else {
+        setLoading(true);
+      }
       return;
     }
+    setBuffering(false);
     setLoading(false);
+
     if (
       status.shouldPlay &&
       !status.isPlaying &&
@@ -230,12 +244,22 @@ const PlayerModal: React.FC<{
     ) {
       retryCountRef.current += 1;
       videoRef.current?.playAsync().catch(() => {});
-    } else if (status.isPlaying) {
-      retryCountRef.current = 0;
     }
   };
 
-  if (!channel) return null;
+  // Android hardware back button should close the player, same as the ✕
+  // button — but only while the player is actually open, otherwise this
+  // would swallow back-navigation on the rest of the app.
+  useEffect(() => {
+    if (!visible) return;
+    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+      onClose();
+      return true;
+    });
+    return () => sub.remove();
+  }, [visible, onClose]);
+
+  if (!channel || !visible) return null;
 
   // Use the larger of width/height since after a landscape lock, "width"
   // briefly reports the old portrait value on some Android devices during
@@ -245,7 +269,12 @@ const PlayerModal: React.FC<{
   const playerHeight = Math.min(Platform.OS === "web" ? 540 : 360, screenNarrow * 0.9);
 
   return (
-    <Modal animationType="slide" visible={visible} onRequestClose={onClose}>
+    <View
+      style={[
+        StyleSheet.absoluteFillObject,
+        { width, height, backgroundColor: C.bg, zIndex: 1000, elevation: 1000 },
+      ]}
+    >
       <View style={[styles.modalRoot, { paddingTop: insets.top }]}>
 
         {/* Header */}
@@ -313,7 +342,10 @@ const PlayerModal: React.FC<{
                 resizeMode={ResizeMode.CONTAIN}
                 progressUpdateIntervalMillis={500}
                 onLoadStart={() => setLoading(true)}
-                onReadyForDisplay={() => setLoading(false)}
+                onReadyForDisplay={() => {
+                  setLoading(false);
+                  hasStartedRef.current = true;
+                }}
                 onPlaybackStatusUpdate={onPlaybackStatusUpdate}
                 onError={() => {
                   setLoading(false);
@@ -331,6 +363,12 @@ const PlayerModal: React.FC<{
                 <Text style={styles.loadingText}>Connecting…</Text>
               </View>
             )}
+
+            {!loading && buffering && !isYouTube && (
+              <View style={styles.bufferBadge}>
+                <ActivityIndicator size="small" color={C.accent} />
+              </View>
+            )}
           </View>
         </View>
 
@@ -344,7 +382,7 @@ const PlayerModal: React.FC<{
           </Text>
         </View>
       </View>
-    </Modal>
+    </View>
   );
 };
 
@@ -703,6 +741,14 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   loadingText: { color: C.textSec, fontSize: 13 },
+  bufferBadge: {
+    position: "absolute",
+    top: 10,
+    right: 10,
+    backgroundColor: "rgba(8,9,15,0.6)",
+    borderRadius: 20,
+    padding: 6,
+  },
 
   // Error
   errorBox: {
