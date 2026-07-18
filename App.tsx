@@ -15,6 +15,8 @@ import {
   TextInput,
   View,
   Animated,
+  useWindowDimensions,
+  AppState,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Audio, Video, ResizeMode } from "expo-av";
@@ -58,8 +60,6 @@ const extractYouTubeId = (url: string): string | null => {
     return null;
   }
 };
-
-const { width } = Dimensions.get("window");
 
 // ── Palette ──────────────────────────────────────────────
 const C = {
@@ -146,24 +146,64 @@ const PlayerModal: React.FC<{
   useKeepAwake();
   const [loading, setLoading] = useState(true);
   const insets = useSafeAreaInsets();
+  // Live screen size — updates automatically when we lock to landscape,
+  // unlike a one-time Dimensions.get() snapshot which goes stale after rotation.
+  const { width, height } = useWindowDimensions();
 
   useEffect(() => {
+    let cancelled = false;
     (async () => {
-      if (visible) {
-        await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
-      } else {
-        await ScreenOrientation.unlockAsync();
+      try {
+        if (visible) {
+          await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
+        } else if (!cancelled) {
+          await ScreenOrientation.unlockAsync();
+        }
+      } catch (e) {
+        // Some devices/tablets can reject a lock request — fail silently
+        // rather than leaving the player in a broken state.
+        console.warn("Orientation lock error:", e);
       }
     })();
+    return () => {
+      cancelled = true;
+    };
   }, [visible]);
 
+  // Always restore portrait + unlock if the component ever unmounts while
+  // still locked to landscape (e.g. app crash recovery, fast navigation away).
+  useEffect(() => {
+    return () => {
+      ScreenOrientation.unlockAsync().catch(() => {});
+    };
+  }, []);
+
   useEffect(() => setLoading(true), [channel?.videoUrl]);
+
+  const videoRef = React.useRef<Video>(null);
+
+  // Pause the native player before the app is backgrounded/killed. Letting
+  // expo-av keep decoding an HLS stream while the app is backgrounded is a
+  // known source of freezes/crashes on some Android devices when it resumes.
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state !== "active" && videoRef.current) {
+        videoRef.current.pauseAsync().catch(() => {});
+      }
+    });
+    return () => sub.remove();
+  }, []);
 
   if (!channel) return null;
 
   const isYouTube = channel.type === "youtube";
   const ytId = isYouTube ? extractYouTubeId(channel.videoUrl) : null;
-  const playerHeight = Math.min(Platform.OS === "web" ? 540 : 360, width * 0.7);
+  // Use the larger of width/height since after a landscape lock, "width"
+  // briefly reports the old portrait value on some Android devices during
+  // the rotation animation — using max() avoids a squashed/oversized player.
+  const screenWide = Math.max(width, height);
+  const screenNarrow = Math.min(width, height);
+  const playerHeight = Math.min(Platform.OS === "web" ? 540 : 360, screenNarrow * 0.9);
 
   return (
     <Modal animationType="slide" visible={visible} onRequestClose={onClose}>
@@ -197,7 +237,7 @@ const PlayerModal: React.FC<{
               ytId ? (
                 <YoutubePlayer
                   height={playerHeight}
-                  width={width}
+                  width={screenWide}
                   play
                   videoId={ytId}
                   onReady={() => setLoading(false)}
@@ -215,7 +255,7 @@ const PlayerModal: React.FC<{
                   }}
                 />
               ) : (
-                <View style={styles.errorBox}>
+                <View style={[styles.errorBox, { width: screenWide }]}>
                   <Text style={styles.errorEmoji}>⚠️</Text>
                   <Text style={styles.errorText}>Invalid YouTube URL</Text>
                   <Pressable onPress={() => Linking.openURL(channel.videoUrl)} style={styles.openBtn}>
@@ -225,7 +265,8 @@ const PlayerModal: React.FC<{
               )
             ) : (
               <Video
-                style={{ width, height: playerHeight, backgroundColor: "#000" }}
+                ref={videoRef}
+                style={{ width: screenWide, height: playerHeight, backgroundColor: "#000" }}
                 source={{ uri: channel.videoUrl }}
                 useNativeControls
                 shouldPlay
@@ -625,7 +666,7 @@ const styles = StyleSheet.create({
 
   // Error
   errorBox: {
-    width, height: 280,
+    height: 280,
     alignItems: "center", justifyContent: "center", gap: 10,
   },
   errorEmoji: { fontSize: 36 },
