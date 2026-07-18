@@ -178,26 +178,67 @@ const PlayerModal: React.FC<{
     };
   }, []);
 
-  useEffect(() => setLoading(true), [channel?.videoUrl]);
+  const isYouTube = channel?.type === "youtube";
+  const ytId = isYouTube && channel ? extractYouTubeId(channel.videoUrl) : null;
 
   const videoRef = React.useRef<Video>(null);
+  const userPausedRef = React.useRef(false);
+  const retryCountRef = React.useRef(0);
 
-  // Pause the native player before the app is backgrounded/killed. Letting
-  // expo-av keep decoding an HLS stream while the app is backgrounded is a
-  // known source of freezes/crashes on some Android devices when it resumes.
+  useEffect(() => {
+    setLoading(true);
+    retryCountRef.current = 0;
+    userPausedRef.current = false;
+  }, [channel?.videoUrl]);
+
+  // Pause the native player when the app is backgrounded (avoids a known
+  // expo-av crash/freeze source), and — importantly — resume it again once
+  // the app is foregrounded, as long as the user didn't pause it themselves.
+  // (Without the resume half, any brief background dip — a notification,
+  // switching apps for a second, the screen auto-dimming — leaves the
+  // player paused forever, which looks like it "randomly stopped".)
   useEffect(() => {
     const sub = AppState.addEventListener("change", (state) => {
-      if (state !== "active" && videoRef.current) {
+      if (!videoRef.current || isYouTube) return;
+      if (state !== "active") {
         videoRef.current.pauseAsync().catch(() => {});
+      } else if (!userPausedRef.current) {
+        videoRef.current.playAsync().catch(() => {});
       }
     });
     return () => sub.remove();
-  }, []);
+  }, [isYouTube]);
+
+  // Live-stream stall recovery: if playback unexpectedly drops to "not
+  // playing" while shouldPlay is still true (nothing — not us, not the user
+  // via the native controls — asked it to stop), it's almost always a brief
+  // network hiccup. Retry automatically instead of leaving a frozen/black
+  // screen that looks like a crash. If the user deliberately hits pause on
+  // the native controls, shouldPlay flips to false too, so we correctly
+  // leave it alone.
+  const onPlaybackStatusUpdate = (status: any) => {
+    if (!status.isLoaded) return;
+    userPausedRef.current = !status.shouldPlay;
+    if (status.isBuffering) {
+      setLoading(true);
+      return;
+    }
+    setLoading(false);
+    if (
+      status.shouldPlay &&
+      !status.isPlaying &&
+      !status.didJustFinish &&
+      retryCountRef.current < 5
+    ) {
+      retryCountRef.current += 1;
+      videoRef.current?.playAsync().catch(() => {});
+    } else if (status.isPlaying) {
+      retryCountRef.current = 0;
+    }
+  };
 
   if (!channel) return null;
 
-  const isYouTube = channel.type === "youtube";
-  const ytId = isYouTube ? extractYouTubeId(channel.videoUrl) : null;
   // Use the larger of width/height since after a landscape lock, "width"
   // briefly reports the old portrait value on some Android devices during
   // the rotation animation — using max() avoids a squashed/oversized player.
@@ -275,6 +316,7 @@ const PlayerModal: React.FC<{
                 progressUpdateIntervalMillis={500}
                 onLoadStart={() => setLoading(true)}
                 onReadyForDisplay={() => setLoading(false)}
+                onPlaybackStatusUpdate={onPlaybackStatusUpdate}
                 onError={() => {
                   setLoading(false);
                   Alert.alert("Playback Error", "Stream unavailable right now.", [
