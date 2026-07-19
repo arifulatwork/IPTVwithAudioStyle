@@ -18,6 +18,7 @@ import {
   AppState,
   BackHandler,
   Easing,
+  PanResponder,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Audio, Video, ResizeMode } from "expo-av";
@@ -169,6 +170,48 @@ const PlayerOverlay: React.FC<{
     }).start();
   }, [expanded]);
 
+  // Free-drag offset for the mini player — lets the user pick it up and
+  // move it anywhere on screen (e.g. into the middle). It's ignored once
+  // fully expanded (see dragFade below), and reset whenever a new channel
+  // is opened so it starts back at its default docked spot.
+  const pan = React.useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
+  const dragStartRef = React.useRef({ x: 0, y: 0, t: 0 });
+  const boundsRef = React.useRef({ minX: 0, maxX: 0, minY: 0, maxY: 0 });
+  const expandedRef = React.useRef(expanded);
+  expandedRef.current = expanded;
+  const onExpandRef = React.useRef(onExpand);
+  onExpandRef.current = onExpand;
+
+  const panResponder = React.useRef(
+    PanResponder.create({
+      // Only the mini player is draggable — full screen ignores gestures here
+      // so the native video controls and header buttons work normally.
+      onStartShouldSetPanResponder: () => !expandedRef.current,
+      onMoveShouldSetPanResponder: (_, g) =>
+        !expandedRef.current && (Math.abs(g.dx) > 3 || Math.abs(g.dy) > 3),
+      onPanResponderGrant: () => {
+        dragStartRef.current = {
+          x: (pan.x as any)._value,
+          y: (pan.y as any)._value,
+          t: Date.now(),
+        };
+      },
+      onPanResponderMove: (_, g) => {
+        const b = boundsRef.current;
+        const nx = Math.min(b.maxX, Math.max(b.minX, dragStartRef.current.x + g.dx));
+        const ny = Math.min(b.maxY, Math.max(b.minY, dragStartRef.current.y + g.dy));
+        pan.setValue({ x: nx, y: ny });
+      },
+      onPanResponderRelease: (_, g) => {
+        // A tap (barely any movement, released quickly) expands to full
+        // screen — anything more deliberate is treated as a drag.
+        const moved = Math.abs(g.dx) > 6 || Math.abs(g.dy) > 6;
+        const quick = Date.now() - dragStartRef.current.t < 400;
+        if (!moved && quick) onExpandRef.current();
+      },
+    })
+  ).current;
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -212,6 +255,7 @@ const PlayerOverlay: React.FC<{
     retryCountRef.current = 0;
     userPausedRef.current = false;
     hasStartedRef.current = false;
+    pan.setValue({ x: 0, y: 0 });
   }, [channel?.videoUrl]);
 
   // Background audio for live (m3u8) channels is the whole point of this
@@ -286,10 +330,30 @@ const PlayerOverlay: React.FC<{
   const MINI_HEIGHT = Math.min(240, Math.max(150, Math.round(miniWidth * 9 / 16)));
   const miniTop = height - MINI_HEIGHT - insets.bottom - MINI_MARGIN;
 
+  // Keep the dragged position fully on-screen with a small edge margin,
+  // expressed relative to the default docked spot (since pan.x/pan.y are offsets).
+  const EDGE = 6;
+  boundsRef.current = {
+    minX: EDGE - MINI_MARGIN,
+    maxX: width - miniWidth - EDGE - MINI_MARGIN,
+    minY: insets.top + EDGE - miniTop,
+    maxY: height - MINI_HEIGHT - insets.bottom - EDGE - miniTop,
+  };
+
+  // Drag offset fades out as the player expands, so it always lands cleanly
+  // full-screen regardless of where the mini player was dragged to.
+  const dragFade = Animated.subtract(1, expandAnim);
+
   const containerStyle = {
     position: "absolute" as const,
-    left: expandAnim.interpolate({ inputRange: [0, 1], outputRange: [MINI_MARGIN, 0] }),
-    top: expandAnim.interpolate({ inputRange: [0, 1], outputRange: [miniTop, 0] }),
+    left: Animated.add(
+      expandAnim.interpolate({ inputRange: [0, 1], outputRange: [MINI_MARGIN, 0] }),
+      Animated.multiply(pan.x, dragFade)
+    ),
+    top: Animated.add(
+      expandAnim.interpolate({ inputRange: [0, 1], outputRange: [miniTop, 0] }),
+      Animated.multiply(pan.y, dragFade)
+    ),
     width: expandAnim.interpolate({ inputRange: [0, 1], outputRange: [miniWidth, width] }),
     height: expandAnim.interpolate({ inputRange: [0, 1], outputRange: [MINI_HEIGHT, height] }),
     borderRadius: expandAnim.interpolate({ inputRange: [0, 1], outputRange: [16, 0] }),
@@ -308,9 +372,8 @@ const PlayerOverlay: React.FC<{
         { zIndex: 1000, elevation: 1000 },
       ]}
     >
-      <Pressable
-        onPress={() => { if (!expanded) onExpand(); }}
-        disabled={expanded}
+      <View
+        {...panResponder.panHandlers}
         style={StyleSheet.absoluteFillObject}
       >
         {isYouTube ? (
@@ -416,7 +479,9 @@ const PlayerOverlay: React.FC<{
           </View>
         </Animated.View>
 
-        {/* Full-screen chrome — fades in only once mostly expanded */}
+        {/* Full-screen chrome — a soft gradient fade at the top only, so it
+            blends into the video instead of reading as a solid bar. The
+            bottom is left clear for the native player's own controls. */}
         {expanded && (
           <Animated.View
             pointerEvents="box-none"
@@ -425,6 +490,11 @@ const PlayerOverlay: React.FC<{
               { opacity: expandAnim.interpolate({ inputRange: [0.6, 1], outputRange: [0, 1], extrapolate: "clamp" }) },
             ]}
           >
+            <LinearGradient
+              colors={["rgba(2,3,8,0.85)", "transparent"]}
+              style={styles.fullHeaderGradient}
+              pointerEvents="none"
+            />
             <View style={[styles.fullHeaderBar, { paddingTop: insets.top + 10 }]}>
               <View style={styles.modalTitleRow}>
                 <View style={[styles.modalBadge, { backgroundColor: isYouTube ? C.ytSoft : C.liveSoft }]}>
@@ -435,25 +505,16 @@ const PlayerOverlay: React.FC<{
                 </View>
                 <Text style={styles.modalTitle} numberOfLines={1}>{channel.text}</Text>
               </View>
-              <Pressable onPress={onCollapse} style={styles.closeBtn} hitSlop={8}>
-                <Text style={styles.closeText}>⌄</Text>
+              <Pressable onPress={onCollapse} style={styles.fullIconBtn} hitSlop={8}>
+                <Text style={styles.fullIconBtnText}>⌄</Text>
               </Pressable>
-              <Pressable onPress={onClose} style={[styles.closeBtn, { marginLeft: 8 }]} hitSlop={8}>
-                <Text style={styles.closeText}>✕</Text>
+              <Pressable onPress={onClose} style={styles.fullIconBtn} hitSlop={8}>
+                <Text style={styles.fullIconBtnText}>✕</Text>
               </Pressable>
-            </View>
-
-            <View style={[styles.fullHintBar, { paddingBottom: insets.bottom + 8 }]}>
-              <Text style={styles.hintIcon}>{isYouTube ? "📱" : "🔒"}</Text>
-              <Text style={styles.hintText}>
-                {isYouTube
-                  ? "Press Home for Picture-in-Picture"
-                  : "Audio continues playing on lock screen"}
-              </Text>
             </View>
           </Animated.View>
         )}
-      </Pressable>
+      </View>
     </Animated.View>
   );
 };
@@ -889,16 +950,23 @@ const styles = StyleSheet.create({
   miniTitle: { flex: 1, color: C.textPri, fontSize: 14, fontWeight: "700" },
   miniBtnIcon: { color: C.textPri, fontSize: 13, fontWeight: "700" },
 
-  // Full-screen chrome — translucent header/hint bars floating over the video
-  fullChrome: { ...StyleSheet.absoluteFillObject, justifyContent: "space-between" },
+  // Full-screen chrome — a gradient fade at the top with small circular
+  // icon buttons, instead of a solid opaque bar
+  fullChrome: { ...StyleSheet.absoluteFillObject, justifyContent: "flex-start" },
+  fullHeaderGradient: {
+    position: "absolute",
+    left: 0, right: 0, top: 0,
+    height: 110,
+  },
   fullHeaderBar: {
     flexDirection: "row", alignItems: "center",
     paddingHorizontal: 14, paddingBottom: 10,
-    gap: 10, backgroundColor: "rgba(6,7,14,0.55)",
+    gap: 8,
   },
-  fullHintBar: {
-    flexDirection: "row", alignItems: "center",
-    justifyContent: "center", gap: 6, paddingTop: 10,
-    backgroundColor: "rgba(6,7,14,0.5)",
+  fullIconBtn: {
+    width: 32, height: 32, borderRadius: 16,
+    alignItems: "center", justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.45)",
   },
+  fullIconBtnText: { color: C.textPri, fontWeight: "700", fontSize: 14 },
 });
