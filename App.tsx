@@ -139,7 +139,6 @@ const ChannelCard: React.FC<{
 };
 
 /** Player Overlay — mini docked player that expands to full screen **/
-const MINI_HEIGHT = 76;
 const MINI_MARGIN = 12;
 
 const PlayerOverlay: React.FC<{
@@ -282,6 +281,9 @@ const PlayerOverlay: React.FC<{
   if (!channel) return null;
 
   const miniWidth = width - MINI_MARGIN * 2;
+  // Proper 16:9-ish sizing so the video is actually watchable while mini —
+  // a thin fixed-height bar squashed the picture down to almost nothing.
+  const MINI_HEIGHT = Math.min(240, Math.max(150, Math.round(miniWidth * 9 / 16)));
   const miniTop = height - MINI_HEIGHT - insets.bottom - MINI_MARGIN;
 
   const containerStyle = {
@@ -398,8 +400,12 @@ const PlayerOverlay: React.FC<{
             { opacity: expandAnim.interpolate({ inputRange: [0, 0.4], outputRange: [1, 0], extrapolate: "clamp" }) },
           ]}
         >
-          <LinearGradient colors={["transparent", "rgba(2,3,8,0.9)"]} style={StyleSheet.absoluteFillObject} />
-          <View style={styles.miniInfo}>
+          <Pressable onPress={onClose} hitSlop={10} style={styles.miniCloseBtn}>
+            <Text style={styles.miniBtnIcon}>✕</Text>
+          </Pressable>
+
+          <View style={styles.miniInfoBar}>
+            <LinearGradient colors={["transparent", "rgba(2,3,8,0.92)"]} style={StyleSheet.absoluteFillObject} />
             <View style={[styles.pill, { backgroundColor: isYouTube ? C.ytSoft : C.liveSoft }]}>
               {!isYouTube && <View style={styles.liveDot} />}
               <Text style={[styles.pillText, { color: isYouTube ? C.yt : C.live }]}>
@@ -407,14 +413,6 @@ const PlayerOverlay: React.FC<{
               </Text>
             </View>
             <Text style={styles.miniTitle} numberOfLines={1}>{channel.text}</Text>
-          </View>
-          <View style={styles.miniButtons}>
-            <Pressable onPress={onExpand} hitSlop={10} style={styles.miniBtn}>
-              <Text style={styles.miniBtnIcon}>⤢</Text>
-            </Pressable>
-            <Pressable onPress={onClose} hitSlop={10} style={styles.miniBtn}>
-              <Text style={styles.miniBtnIcon}>✕</Text>
-            </Pressable>
           </View>
         </Animated.View>
 
@@ -867,24 +865,29 @@ const styles = StyleSheet.create({
   ytPlaceholderLogo: { width: "40%", height: "40%", opacity: 0.85 },
   errorOverlay: { alignItems: "center", justifyContent: "center", gap: 10, backgroundColor: C.bg },
 
-  // Mini bar chrome — overlaid on the bottom of the small docked player
+  // Mini card chrome — a small close button top-right, info strip on bottom
   miniChrome: {
     position: "absolute",
     left: 0, right: 0, bottom: 0, top: 0,
-    flexDirection: "row",
-    alignItems: "flex-end",
-    paddingHorizontal: 10,
-    paddingVertical: 8,
   },
-  miniInfo: { flex: 1, justifyContent: "flex-end", gap: 4 },
-  miniTitle: { color: C.textPri, fontSize: 13, fontWeight: "700" },
-  miniButtons: { flexDirection: "row", alignItems: "center", gap: 6 },
-  miniBtn: {
-    width: 30, height: 30, borderRadius: 15,
+  miniCloseBtn: {
+    position: "absolute",
+    top: 8, right: 8,
+    width: 28, height: 28, borderRadius: 14,
     alignItems: "center", justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.14)",
+    backgroundColor: "rgba(0,0,0,0.5)",
   },
-  miniBtnIcon: { color: C.textPri, fontSize: 15, fontWeight: "700" },
+  miniInfoBar: {
+    position: "absolute",
+    left: 0, right: 0, bottom: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  miniTitle: { flex: 1, color: C.textPri, fontSize: 14, fontWeight: "700" },
+  miniBtnIcon: { color: C.textPri, fontSize: 13, fontWeight: "700" },
 
   // Full-screen chrome — translucent header/hint bars floating over the video
   fullChrome: { ...StyleSheet.absoluteFillObject, justifyContent: "space-between" },
