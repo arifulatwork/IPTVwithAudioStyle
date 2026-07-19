@@ -4,6 +4,18 @@
 
 ---
 
+
+## 📥 Download APK
+
+Try the latest Android build without compiling the project.
+
+**APK Download:**
+https://drive.google.com/file/d/1FnZp2hA4iO5gDawguA-H7hq0ry0mw6MW/view?usp=sharing
+
+> Enable **"Install from Unknown Sources"** on your Android device if prompted during installation.
+
+---
+
 ## ✨ Features
 
 - 🔴 **Live HLS Streams** — Watch m3u8 channels with native controls
