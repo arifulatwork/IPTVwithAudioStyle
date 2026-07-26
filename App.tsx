@@ -31,7 +31,7 @@ import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-cont
 const GIST_URL =
   "https://gist.githubusercontent.com/arifulatwork/22a771aa1e054bca05dd0b620ac2612e/raw/tv.json";
 
-type ChannelType = "m3u8" | "youtube";
+type ChannelType = "m3u8" | "youtube" | "radio";
 interface Channel {
   image: string;
   text: string;
@@ -75,6 +75,8 @@ const C = {
   liveSoft: "#0d2318",
   yt:       "#ff3b30",
   ytSoft:   "#2a0d0b",
+  radio:    "#a855f7",
+  radioSoft:"#241a3a",
   star:     "#f59e0b",
   textPri:  "#f0f4ff",
   textSec:  "#6b7a9a",
@@ -90,7 +92,13 @@ const ChannelCard: React.FC<{
   index: number;
 }> = ({ item, onPress, isFavorite, onToggleFavorite, index }) => {
   const scale = React.useRef(new Animated.Value(1)).current;
-  const isLive = item.type === "m3u8";
+  const accent =
+    item.type === "m3u8" ? C.live : item.type === "radio" ? C.radio : C.yt;
+  const accentSoft =
+    item.type === "m3u8" ? C.liveSoft : item.type === "radio" ? C.radioSoft : C.ytSoft;
+  const label =
+    item.type === "m3u8" ? "LIVE" : item.type === "radio" ? "RADIO" : "YouTube";
+  const showDot = item.type !== "youtube"; // live + radio pulse, YouTube doesn't
 
   const onPressIn = () =>
     Animated.spring(scale, { toValue: 0.97, useNativeDriver: true, speed: 40 }).start();
@@ -106,10 +114,10 @@ const ChannelCard: React.FC<{
         style={styles.card}
       >
         {/* Left accent strip */}
-        <View style={[styles.cardStrip, { backgroundColor: isLive ? C.live : C.yt }]} />
+        <View style={[styles.cardStrip, { backgroundColor: accent }]} />
 
         {/* Logo */}
-        <View style={[styles.logoBox, { backgroundColor: isLive ? C.liveSoft : C.ytSoft }]}>
+        <View style={[styles.logoBox, { backgroundColor: accentSoft }]}>
           <Image source={{ uri: item.image }} style={styles.logo} resizeMode="contain" />
         </View>
 
@@ -118,11 +126,11 @@ const ChannelCard: React.FC<{
           <Text style={styles.cardTitle} numberOfLines={1}>{item.text}</Text>
 
           <View style={styles.cardMeta}>
-            {/* Live dot / YT label */}
-            <View style={[styles.pill, { backgroundColor: isLive ? C.liveSoft : C.ytSoft }]}>
-              {isLive && <View style={styles.liveDot} />}
-              <Text style={[styles.pillText, { color: isLive ? C.live : C.yt }]}>
-                {isLive ? "LIVE" : "YouTube"}
+            {/* Live/Radio dot / YT label */}
+            <View style={[styles.pill, { backgroundColor: accentSoft }]}>
+              {showDot && <View style={[styles.liveDot, { backgroundColor: accent }]} />}
+              <Text style={[styles.pillText, { color: accent }]}>
+                {label}
               </Text>
             </View>
           </View>
@@ -249,6 +257,114 @@ const PlayerOverlay: React.FC<{
   const hasStartedRef = React.useRef(false);
   const [buffering, setBuffering] = useState(false);
 
+  // Radio (audio-only http streams) plays through expo-av's Audio.Sound
+  // rather than <Video>, since there's no picture to render. It shares the
+  // same background-audio session as the m3u8 channels (see
+  // Audio.setAudioModeAsync in AppInner), so it keeps playing on lock
+  // screen / while backgrounded in exactly the same way.
+  const isRadio = channel?.type === "radio";
+  const radioSoundRef = React.useRef<Audio.Sound | null>(null);
+  const [radioPlaying, setRadioPlaying] = useState(true);
+
+  const toggleRadioPlay = async () => {
+    const sound = radioSoundRef.current;
+    if (!sound) return;
+    try {
+      const status = await sound.getStatusAsync();
+      if (!status.isLoaded) return;
+      if (status.isPlaying) {
+        userPausedRef.current = true;
+        setRadioPlaying(false);
+        await sound.pauseAsync();
+      } else {
+        userPausedRef.current = false;
+        setRadioPlaying(true);
+        await sound.playAsync();
+      }
+    } catch {}
+  };
+
+  // Load/unload the radio stream whenever the channel changes (including
+  // switching away from radio or closing the player entirely).
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      if (radioSoundRef.current) {
+        try {
+          await radioSoundRef.current.unloadAsync();
+        } catch {}
+        radioSoundRef.current = null;
+      }
+
+      if (cancelled || !channel || channel.type !== "radio") return;
+
+      setLoading(true);
+      setBuffering(false);
+      hasStartedRef.current = false;
+      retryCountRef.current = 0;
+      userPausedRef.current = false;
+      setRadioPlaying(true);
+
+      try {
+        const { sound } = await Audio.Sound.createAsync(
+          { uri: channel.videoUrl },
+          { shouldPlay: true, progressUpdateIntervalMillis: 500 },
+          (status: any) => {
+            if (cancelled || !status.isLoaded) return;
+            userPausedRef.current = !status.shouldPlay;
+
+            if (status.isPlaying) {
+              hasStartedRef.current = true;
+              retryCountRef.current = 0;
+            }
+
+            if (status.isBuffering) {
+              hasStartedRef.current ? setBuffering(true) : setLoading(true);
+              return;
+            }
+            setBuffering(false);
+            setLoading(false);
+
+            if (
+              status.shouldPlay &&
+              !status.isPlaying &&
+              !status.didJustFinish &&
+              retryCountRef.current < 5
+            ) {
+              retryCountRef.current += 1;
+              radioSoundRef.current?.playAsync().catch(() => {});
+            }
+          }
+        );
+        if (cancelled) {
+          await sound.unloadAsync();
+          return;
+        }
+        radioSoundRef.current = sound;
+      } catch (e) {
+        console.warn("Radio load error:", e);
+        setLoading(false);
+        Alert.alert("Playback Error", "Radio stream unavailable right now.", [
+          { text: "Close", style: "cancel" },
+          { text: "Open in Browser", onPress: () => Linking.openURL(channel.videoUrl) },
+        ]);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [channel?.videoUrl, channel?.type]);
+
+  // Belt-and-braces: release the sound if this whole overlay ever unmounts.
+  useEffect(() => {
+    return () => {
+      radioSoundRef.current?.unloadAsync().catch(() => {});
+      radioSoundRef.current = null;
+    };
+  }, []);
+
   useEffect(() => {
     setLoading(true);
     setBuffering(false);
@@ -266,13 +382,15 @@ const PlayerOverlay: React.FC<{
   // if the stream actually stopped and the user didn't pause it themselves.
   useEffect(() => {
     const sub = AppState.addEventListener("change", (state) => {
-      if (!videoRef.current || isYouTube) return;
-      if (state === "active" && !userPausedRef.current) {
+      if (state !== "active" || userPausedRef.current) return;
+      if (isRadio) {
+        radioSoundRef.current?.playAsync().catch(() => {});
+      } else if (videoRef.current && !isYouTube) {
         videoRef.current.playAsync().catch(() => {});
       }
     });
     return () => sub.remove();
-  }, [isYouTube]);
+  }, [isYouTube, isRadio]);
 
   // Once the stream has rendered its first frame, brief re-buffering blips
   // (completely normal for live HLS — segments download in small bursts)
@@ -364,6 +482,11 @@ const PlayerOverlay: React.FC<{
 
   const showYouTubeError = isYouTube && expanded && !ytId;
 
+  const badgeColor = isYouTube ? C.yt : isRadio ? C.radio : C.live;
+  const badgeSoft = isYouTube ? C.ytSoft : isRadio ? C.radioSoft : C.liveSoft;
+  const badgeLabel = isYouTube ? "YouTube" : isRadio ? "RADIO" : "LIVE";
+  const showBadgeDot = !isYouTube; // live + radio pulse, YouTube doesn't
+
   return (
     <Animated.View
       style={[
@@ -406,6 +529,19 @@ const PlayerOverlay: React.FC<{
               <Image source={{ uri: channel.image }} style={styles.ytPlaceholderLogo} resizeMode="contain" />
             </View>
           )
+        ) : isRadio ? (
+          // Radio has no picture, just audio — show the station art on a
+          // gradient backdrop, with a big tap target when full-screen.
+          // Playback itself is driven by the Audio.Sound effect above.
+          <View style={[StyleSheet.absoluteFillObject, styles.radioStage]}>
+            <LinearGradient colors={[C.radioSoft, C.bg]} style={StyleSheet.absoluteFillObject} />
+            <Image source={{ uri: channel.image }} style={styles.radioArt} resizeMode="contain" />
+            {expanded && (
+              <Pressable onPress={toggleRadioPlay} style={styles.radioPlayBtn} hitSlop={16}>
+                <Text style={styles.radioPlayIcon}>{radioPlaying ? "❚❚" : "►"}</Text>
+              </Pressable>
+            )}
+          </View>
         ) : (
           <Video
             ref={videoRef}
@@ -469,13 +605,16 @@ const PlayerOverlay: React.FC<{
 
           <View style={styles.miniInfoBar}>
             <LinearGradient colors={["transparent", "rgba(2,3,8,0.92)"]} style={StyleSheet.absoluteFillObject} />
-            <View style={[styles.pill, { backgroundColor: isYouTube ? C.ytSoft : C.liveSoft }]}>
-              {!isYouTube && <View style={styles.liveDot} />}
-              <Text style={[styles.pillText, { color: isYouTube ? C.yt : C.live }]}>
-                {isYouTube ? "YouTube" : "LIVE"}
-              </Text>
+            <View style={[styles.pill, { backgroundColor: badgeSoft }]}>
+              {showBadgeDot && <View style={[styles.liveDot, { backgroundColor: badgeColor }]} />}
+              <Text style={[styles.pillText, { color: badgeColor }]}>{badgeLabel}</Text>
             </View>
             <Text style={styles.miniTitle} numberOfLines={1}>{channel.text}</Text>
+            {isRadio && (
+              <Pressable onPress={toggleRadioPlay} hitSlop={10} style={styles.miniRadioBtn}>
+                <Text style={styles.miniBtnIcon}>{radioPlaying ? "❚❚" : "►"}</Text>
+              </Pressable>
+            )}
           </View>
         </Animated.View>
 
@@ -497,11 +636,9 @@ const PlayerOverlay: React.FC<{
             />
             <View style={[styles.fullHeaderBar, { paddingTop: insets.top + 10 }]}>
               <View style={styles.modalTitleRow}>
-                <View style={[styles.modalBadge, { backgroundColor: isYouTube ? C.ytSoft : C.liveSoft }]}>
-                  {!isYouTube && <View style={styles.liveDotLg} />}
-                  <Text style={[styles.modalBadgeText, { color: isYouTube ? C.yt : C.live }]}>
-                    {isYouTube ? "YouTube" : "LIVE"}
-                  </Text>
+                <View style={[styles.modalBadge, { backgroundColor: badgeSoft }]}>
+                  {showBadgeDot && <View style={[styles.liveDotLg, { backgroundColor: badgeColor }]} />}
+                  <Text style={[styles.modalBadgeText, { color: badgeColor }]}>{badgeLabel}</Text>
                 </View>
                 <Text style={styles.modalTitle} numberOfLines={1}>{channel.text}</Text>
               </View>
@@ -949,6 +1086,25 @@ const styles = StyleSheet.create({
   },
   miniTitle: { flex: 1, color: C.textPri, fontSize: 14, fontWeight: "700" },
   miniBtnIcon: { color: C.textPri, fontSize: 13, fontWeight: "700" },
+  miniRadioBtn: {
+    width: 26, height: 26, borderRadius: 13,
+    alignItems: "center", justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.14)",
+  },
+
+  // Radio stage — no video, so we show station art on a gradient with a
+  // big tap-to-play/pause button once full-screen.
+  radioStage: { alignItems: "center", justifyContent: "center" },
+  radioArt: { width: "42%", height: "42%", borderRadius: 20 },
+  radioPlayBtn: {
+    position: "absolute",
+    bottom: "18%",
+    width: 64, height: 64, borderRadius: 32,
+    alignItems: "center", justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.5)",
+    borderWidth: 1, borderColor: "rgba(255,255,255,0.2)",
+  },
+  radioPlayIcon: { color: C.textPri, fontSize: 22, fontWeight: "700" },
 
   // Full-screen chrome — a gradient fade at the top with small circular
   // icon buttons, instead of a solid opaque bar
