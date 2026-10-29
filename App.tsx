@@ -83,6 +83,131 @@ const C = {
   textMute: "#3a4260",
 };
 
+/** CRT static / snow noise **/
+const STATIC_MS = 900;
+const seeded = (n: number) => {
+  const x = Math.sin(n * 12.9898) * 43758.5453;
+  return x - Math.floor(x);
+};
+/** Dense snow static (the original image) — shown when nothing is playing,
+ *  while a channel changes, and while it connects. **/
+const StaticNoise: React.FC = () => {
+  const [f, setF] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setF((n) => n + 1), 70);
+    return () => clearInterval(id);
+  }, []);
+  // The image is drawn larger than the screen, then jumped around / flipped
+  // every frame, so the single picture behaves like an animated GIF.
+  const dx = (seeded(f) - 0.5) * 110;
+  const dy = (seeded(f + 101) - 0.5) * 70;
+  const sx = seeded(f + 7) > 0.5 ? -1 : 1;
+  const sy = seeded(f + 13) > 0.5 ? -1 : 1;
+  const opacity = 0.85 + seeded(f + 3) * 0.15;
+  const barTop = ((f * 9) % 120) - 15;
+  return (
+    <View style={[StyleSheet.absoluteFillObject, { backgroundColor: "#000", overflow: "hidden" }]} pointerEvents="none">
+      <Image
+        source={require("./assets/static.png")}
+        resizeMode="cover"
+        style={{
+          position: "absolute",
+          left: -60, right: -60, top: -40, bottom: -40,
+          opacity,
+          transform: [{ translateX: dx }, { translateY: dy }, { scaleX: sx }, { scaleY: sy }],
+        }}
+      />
+      <View
+        style={{
+          position: "absolute", left: 0, right: 0,
+          top: `${barTop}%`, height: "14%",
+          backgroundColor: "rgba(255,255,255,0.07)",
+        }}
+      />
+    </View>
+  );
+};
+
+/** Old-CRT look drawn on top of the TV screen ALL the time — even while a
+ *  channel is playing: flickering horizontal streaks, glass glare, curved
+ *  dark edges. `strength` 1 = heavy (static showing), lower = lighter so the
+ *  picture stays watchable. **/
+const CrtOverlay: React.FC<{ strength: number; mono?: boolean; snow?: number }> = ({
+  strength,
+  mono = false,
+  snow = 0,
+}) => {
+  const [f, setF] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setF((n) => n + 1), 70);
+    return () => clearInterval(id);
+  }, []);
+
+  const count = Math.round(14 + strength * 34);
+  const alphaScale = 0.35 + 0.65 * strength;
+  const streaks: React.ReactNode[] = [];
+  for (let i = 0; i < count; i++) {
+    // half re-roll every frame, half every 3rd frame → lively flicker
+    const k = i % 2 === 0 ? Math.floor(f / 3) : f;
+    const a = seeded(k * 17.31 + i * 5.77);
+    const b = seeded(k * 9.13 + i * 2.91 + 40);
+    const c = seeded(k * 4.77 + i * 8.11 + 80);
+    const d = seeded(k * 2.39 + i * 1.13 + 120);
+    streaks.push(
+      <View
+        key={i}
+        style={{
+          position: "absolute",
+          left: `${a * 96}%`,
+          top: `${b * 100}%`,
+          width: `${2 + c * c * 26}%`,
+          height: d > 0.8 ? 2 : 1,
+          backgroundColor: `rgba(${mono ? "238,238,238" : "236,233,218"},${Math.min(1, (0.2 + d * 0.7) * alphaScale)})`,
+        }}
+      />
+    );
+  }
+
+  return (
+    <View style={[StyleSheet.absoluteFillObject, { overflow: "hidden" }]} pointerEvents="none">
+      {/* extra snow on top of the picture at the highest noise levels */}
+      {snow > 0 && (
+        <View style={[StyleSheet.absoluteFillObject, { opacity: snow }]}>
+          <StaticNoise />
+        </View>
+      )}
+      {streaks}
+
+      {/* glass reflection — the lighter curved patch at the top of a CRT */}
+      <View
+        style={{
+          position: "absolute", left: "-15%", right: "-15%", top: "-25%", height: "62%",
+          borderBottomLeftRadius: 260, borderBottomRightRadius: 260,
+          backgroundColor: `rgba(255,255,255,${0.04 + strength * 0.05})`,
+        }}
+      />
+
+      {/* tube curvature — edges fall off into darkness */}
+      <LinearGradient
+        colors={["rgba(0,0,0,0.7)", "transparent", "transparent", "rgba(0,0,0,0.7)"]}
+        locations={[0, 0.1, 0.9, 1]}
+        start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+        style={StyleSheet.absoluteFillObject}
+      />
+      <LinearGradient
+        colors={["rgba(0,0,0,0.5)", "transparent", "transparent", "rgba(0,0,0,0.5)"]}
+        locations={[0, 0.12, 0.88, 1]}
+        style={StyleSheet.absoluteFillObject}
+      />
+
+      {/* brightness flicker */}
+      <View
+        style={[StyleSheet.absoluteFillObject, { backgroundColor: "#fff", opacity: seeded(f + 3) * 0.03 }]}
+      />
+    </View>
+  );
+};
+
 /** Animated Card **/
 const ChannelCard: React.FC<{
   item: Channel;
@@ -657,6 +782,205 @@ const PlayerOverlay: React.FC<{
 };
 
 
+/** TV tab — a CRT TV with the same channels. Static (jhirjhir) shows when
+ *  nothing is playing, while a channel is changing, and while it connects. **/
+const TvTab: React.FC<{
+  sections: SectionData[];
+  loading: boolean;
+  favorites: string[];
+  onToggleFavorite: (name: string) => void;
+}> = ({ sections, loading: listLoading, favorites, onToggleFavorite }) => {
+  useKeepAwake();
+  const { width } = useWindowDimensions();
+  const [ch, setCh] = useState<Channel | null>(null);
+  const [changing, setChanging] = useState(false);
+  const [vLoading, setVLoading] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const [noise, setNoise] = useState(2); // 0 = clean picture … 6 = very snowy
+  const [bw, setBw] = useState(false);   // black & white TV
+  const soundRef = React.useRef<Audio.Sound | null>(null);
+
+  const tvW = width - 32;
+  const tvH = Math.round(((tvW - 20) * 9) / 16);
+  const ytId = ch?.type === "youtube" ? extractYouTubeId(ch.videoUrl) : null;
+
+  // Every channel change: static for a moment, then the channel.
+  useEffect(() => {
+    setFailed(false);
+    if (!ch) { setChanging(false); setVLoading(false); return; }
+    setVLoading(true);
+    setChanging(true);
+    const t = setTimeout(() => setChanging(false), STATIC_MS);
+    return () => clearTimeout(t);
+  }, [ch?.videoUrl]);
+
+  // Radio streams play through Audio.Sound (same as the main player).
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (soundRef.current) {
+        try { await soundRef.current.unloadAsync(); } catch {}
+        soundRef.current = null;
+      }
+      if (cancelled || !ch || ch.type !== "radio") return;
+      try {
+        const { sound } = await Audio.Sound.createAsync(
+          { uri: ch.videoUrl },
+          { shouldPlay: true },
+          (st: any) => { if (!cancelled && st.isLoaded && !st.isBuffering) setVLoading(false); }
+        );
+        if (cancelled) { await sound.unloadAsync(); return; }
+        soundRef.current = sound;
+      } catch {
+        setVLoading(false);
+        setFailed(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [ch?.videoUrl, ch?.type]);
+
+  useEffect(() => () => { soundRef.current?.unloadAsync().catch(() => {}); }, []);
+
+  const showStatic = !ch || changing || vLoading || failed;
+  const NOISE_MAX = 6;
+  const noiseStrength = [0, 0.2, 0.4, 0.65, 0.85, 1, 1][noise];
+  const noiseSnow = [0, 0, 0, 0, 0, 0.2, 0.4][noise];
+
+  return (
+    <View style={{ flex: 1 }}>
+      <View style={styles.tvTop}>
+        <View style={[styles.tvBody, { width: tvW }]}>
+          <View style={[styles.tvScreen, { height: tvH }]}>
+            <View
+              style={[
+                StyleSheet.absoluteFillObject,
+                bw ? { filter: [{ grayscale: 1 }] } : null,
+              ]}
+            >
+            {ch?.type === "m3u8" && (
+              <Video
+                key={ch.videoUrl}
+                style={StyleSheet.absoluteFillObject}
+                source={{ uri: ch.videoUrl }}
+                shouldPlay
+                resizeMode={ResizeMode.CONTAIN}
+                onLoadStart={() => setVLoading(true)}
+                onReadyForDisplay={() => setVLoading(false)}
+                onError={() => { setVLoading(false); setFailed(true); }}
+              />
+            )}
+            {ch?.type === "youtube" && ytId && (
+              <YoutubePlayer
+                height={tvH}
+                width={tvW - 20}
+                play
+                videoId={ytId}
+                onReady={() => setVLoading(false)}
+                onError={() => { setVLoading(false); setFailed(true); }}
+                webViewProps={{
+                  allowsInlineMediaPlayback: true,
+                  mediaPlaybackRequiresUserAction: false,
+                }}
+              />
+            )}
+            {ch?.type === "youtube" && !ytId && (
+              <View style={[StyleSheet.absoluteFillObject, styles.radioStage]} />
+            )}
+            {ch?.type === "radio" && (
+              <View style={[StyleSheet.absoluteFillObject, styles.radioStage, { backgroundColor: C.card }]}>
+                <Image source={{ uri: ch.image }} style={styles.radioArt} resizeMode="contain" />
+              </View>
+            )}
+            </View>
+            {showStatic && <StaticNoise />}
+            {(showStatic || noise > 0) && (
+              <CrtOverlay
+                strength={showStatic ? 1 : noiseStrength}
+                snow={showStatic ? 0 : noiseSnow}
+                mono={bw}
+              />
+            )}
+          </View>
+          <View style={styles.tvKnobs}>
+            <View style={styles.tvKnob} />
+            <View style={styles.tvKnob} />
+            <View style={[styles.tvLed, !ch && { backgroundColor: C.textMute }]} />
+          </View>
+        </View>
+        <View style={styles.tvStand} />
+        <View style={styles.tvInfoRow}>
+          <Text style={styles.tvCaption} numberOfLines={1}>
+            {ch ? ch.text.toUpperCase() : "NO SIGNAL"}
+          </Text>
+          {ch && (
+            <Pressable onPress={() => setCh(null)} hitSlop={8} style={styles.tvPowerBtn}>
+              <Text style={styles.tvPowerText}>⏻ OFF</Text>
+            </Pressable>
+          )}
+        </View>
+
+        <View style={styles.tvControls}>
+          <Text style={styles.tvCtlLabel}>NOISE</Text>
+          <Pressable
+            onPress={() => setNoise((n) => Math.max(0, n - 1))}
+            hitSlop={8}
+            style={styles.tvCtlBtn}
+          >
+            <Text style={styles.tvCtlBtnText}>−</Text>
+          </Pressable>
+          <View style={styles.tvBars}>
+            {Array.from({ length: NOISE_MAX }).map((_, i) => (
+              <View key={i} style={[styles.tvBar, i < noise && styles.tvBarOn]} />
+            ))}
+          </View>
+          <Pressable
+            onPress={() => setNoise((n) => Math.min(NOISE_MAX, n + 1))}
+            hitSlop={8}
+            style={styles.tvCtlBtn}
+          >
+            <Text style={styles.tvCtlBtnText}>+</Text>
+          </Pressable>
+
+          <Pressable
+            onPress={() => setBw((v) => !v)}
+            hitSlop={8}
+            style={[styles.tvBwBtn, bw && styles.tvBwBtnOn]}
+          >
+            <Text style={[styles.tvCtlLabel, bw && { color: C.textPri }]}>◐ B&W</Text>
+          </Pressable>
+        </View>
+      </View>
+
+      {listLoading ? (
+        <View style={styles.loadingFull}>
+          <ActivityIndicator size="large" color={C.accent} />
+          <Text style={styles.loadingFullText}>Loading channels…</Text>
+        </View>
+      ) : (
+        <SectionList
+          sections={sections}
+          keyExtractor={(item) => `${item.text}-${item.videoUrl}`}
+          stickySectionHeadersEnabled
+          showsVerticalScrollIndicator={false}
+          renderSectionHeader={({ section: { title } }) => <SectionHeader title={title} />}
+          contentContainerStyle={styles.listContent}
+          renderItem={({ item, index }) => (
+            <ChannelCard
+              item={item}
+              index={index}
+              onPress={() => setCh(item)}
+              isFavorite={favorites.includes(item.text)}
+              onToggleFavorite={() => onToggleFavorite(item.text)}
+            />
+          )}
+          renderSectionFooter={() => <View style={{ height: 8 }} />}
+          ItemSeparatorComponent={() => <View style={{ height: 8 }} />}
+        />
+      )}
+    </View>
+  );
+};
+
 /** Section Header **/
 const SectionHeader: React.FC<{ title: string }> = ({ title }) => (
   <View style={styles.sectionHeader}>
@@ -673,6 +997,7 @@ const AppInner = () => {
   const [current, setCurrent] = useState<Channel | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [favorites, setFavorites] = useState<string[]>([]);
+  const [tab, setTab] = useState<"channels" | "tv">("channels");
   const insets = useSafeAreaInsets();
 
   useEffect(() => {
@@ -747,6 +1072,10 @@ const AppInner = () => {
   // taps it to expand to full screen (see PlayerOverlay).
   const handleOpen = (ch: Channel) => { setCurrent(ch); setExpanded(false); };
   const closePlayer = () => { setExpanded(false); setCurrent(null); };
+  const switchTab = (k: "channels" | "tv") => {
+    if (k === "tv") closePlayer(); // the TV tab has its own player
+    setTab(k);
+  };
   const toggleFavorite = (name: string) =>
     saveFavorites(favorites.includes(name) ? favorites.filter((n) => n !== name) : [...favorites, name]);
 
@@ -790,8 +1119,28 @@ const AppInner = () => {
         </View>
       </LinearGradient>
 
-      {/* ── Channel List ── */}
-      {loading ? (
+      {/* ── Tabs ── */}
+      <View style={styles.tabBar}>
+        {([["channels", "CHANNELS"], ["tv", "TV"]] as const).map(([key, label]) => (
+          <Pressable
+            key={key}
+            onPress={() => switchTab(key)}
+            style={[styles.tabBtn, tab === key && styles.tabBtnActive]}
+          >
+            <Text style={[styles.tabText, tab === key && styles.tabTextActive]}>{label}</Text>
+          </Pressable>
+        ))}
+      </View>
+
+      {/* ── Channel List / TV tab ── */}
+      {tab === "tv" ? (
+        <TvTab
+          sections={filtered}
+          loading={loading}
+          favorites={favorites}
+          onToggleFavorite={toggleFavorite}
+        />
+      ) : loading ? (
         <View style={styles.loadingFull}>
           <ActivityIndicator size="large" color={C.accent} />
           <Text style={styles.loadingFullText}>Loading channels…</Text>
@@ -969,6 +1318,63 @@ const styles = StyleSheet.create({
   starBtn: { paddingHorizontal: 14, paddingVertical: 10 },
   starIcon: { fontSize: 20, color: C.textMute },
   starActive: { color: C.star },
+
+  // Tabs
+  tabBar: {
+    flexDirection: "row",
+    marginHorizontal: 12,
+    marginTop: 10,
+    backgroundColor: C.surface,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: C.border,
+    padding: 3,
+  },
+  tabBtn: { flex: 1, alignItems: "center", paddingVertical: 8, borderRadius: 9 },
+  tabBtnActive: { backgroundColor: C.accentSoft },
+  tabText: { color: C.textSec, fontWeight: "800", fontSize: 12, letterSpacing: 2 },
+  tabTextActive: { color: C.accent },
+
+  // TV tab
+  tvTop: { paddingHorizontal: 16, paddingTop: 16, paddingBottom: 4, alignItems: "center" },
+  tvInfoRow: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 8 },
+  tvControls: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 12 },
+  tvCtlLabel: { color: C.textSec, fontSize: 11, fontWeight: "800", letterSpacing: 1.5 },
+  tvCtlBtn: {
+    width: 30, height: 30, borderRadius: 15,
+    alignItems: "center", justifyContent: "center",
+    borderWidth: 1, borderColor: C.border, backgroundColor: C.surface,
+  },
+  tvCtlBtnText: { color: C.textPri, fontSize: 18, fontWeight: "700", marginTop: -2 },
+  tvBars: { flexDirection: "row", gap: 4, alignItems: "center" },
+  tvBar: { width: 6, height: 14, borderRadius: 2, backgroundColor: C.border },
+  tvBarOn: { backgroundColor: C.accent },
+  tvBwBtn: {
+    marginLeft: 6,
+    paddingHorizontal: 12, paddingVertical: 7,
+    borderRadius: 12, borderWidth: 1,
+    borderColor: C.border, backgroundColor: C.surface,
+  },
+  tvBwBtnOn: { backgroundColor: C.accentSoft, borderColor: C.accent },
+  tvPowerBtn: {
+    paddingHorizontal: 10, paddingVertical: 4,
+    borderRadius: 10, borderWidth: 1, borderColor: C.border,
+  },
+  tvPowerText: { color: C.textSec, fontSize: 11, fontWeight: "800", letterSpacing: 1 },
+  tvRow: { flexDirection: "row", gap: 12 },
+  tvBody: {
+    backgroundColor: C.card,
+    borderRadius: 16,
+    borderWidth: 2,
+    borderColor: C.border,
+    padding: 8,
+  },
+  tvScreen: { borderRadius: 18, overflow: "hidden", backgroundColor: "#000" },
+  tvKnobs: { flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: 6, marginTop: 8 },
+  tvKnob: { width: 10, height: 10, borderRadius: 5, backgroundColor: C.border },
+  tvLed: { width: 6, height: 6, borderRadius: 3, backgroundColor: C.live },
+  tvStand: { width: 40, height: 6, backgroundColor: C.border, borderBottomLeftRadius: 4, borderBottomRightRadius: 4 },
+  tvCaption: { color: C.textMute, fontSize: 11, letterSpacing: 2, fontWeight: "800", maxWidth: 240 },
 
   // List
   listContent: { paddingBottom: 48 },
